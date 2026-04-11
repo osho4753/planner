@@ -90,12 +90,39 @@ async def get_today_tasks(chat_id: int, status_filter: str = "all", for_ai: bool
         return "\n".join(res) if for_ai else "Вот что у нас в графике:\n\n" + "\n".join(res)
 
 async def add_task(chat_id: int, task_text: str, remind_at: str):
+    # --- 1. УМНАЯ ОБРАБОТКА ВРЕМЕНИ (чиним ошибку '%Y-%m-%d %H:%M:%S') ---
+    remind_at = remind_at.strip()
+    if len(remind_at) == 16:  # ИИ забыл секунды: "2026-04-11 21:05"
+        remind_at += ":00"
+    elif len(remind_at) == 5: # ИИ прислал только время: "21:05"
+        today_date = datetime.now().strftime("%Y-%m-%d")
+        remind_at = f"{today_date} {remind_at}:00"
+    elif len(remind_at) == 8: # ИИ прислал время с секундами: "21:05:00"
+        today_date = datetime.now().strftime("%Y-%m-%d")
+        remind_at = f"{today_date} {remind_at}"
+        
+    try:
+        run_date = datetime.strptime(remind_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        # На случай, если ИИ выдаст совсем нечитаемый бред
+        return f"Не смог распознать время для задачи '{task_text}'. Повтори, пожалуйста!"
+
     job_id = f"job_{datetime.now().timestamp()}"
-    scheduler.add_job(send_reminder, 'date', run_date=datetime.strptime(remind_at, "%Y-%m-%d %H:%M:%S"), args=[chat_id, task_text], id=job_id)
+    
+    # Добавляем в планировщик
+    scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, task_text], id=job_id)
+    
+    # --- 2. ИСПРАВЛЕННЫЙ SQL ЗАПРОС (чиним '5 values for 4 columns') ---
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT INTO tasks (chat_id, task_text, remind_at, job_id) VALUES (?,?,?,?,0)", (chat_id, task_text, remind_at, job_id))
+        # Добавили is_completed в список колонок
+        await db.execute(
+            "INSERT INTO tasks (chat_id, task_text, remind_at, job_id, is_completed) VALUES (?, ?, ?, ?, 0)",
+            (chat_id, task_text, remind_at, job_id)
+        )
         await db.commit()
-    return get_random_response("add_task", task_text, remind_at.split()[1][:5])
+        
+    time_short = remind_at.split()[1][:5]
+    return get_random_response("add_task", task_text, time_short)
 
 async def delete_task(chat_id: int, task_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
