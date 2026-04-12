@@ -4,10 +4,10 @@ import tempfile
 import aiosqlite
 import random
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -49,7 +49,7 @@ async def init_db():
         await db.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, task_text TEXT, remind_at TEXT, job_id TEXT, is_completed INTEGER DEFAULT 0)")
         await db.commit()
 
-# --- ЛОГИКА ПЛАНИРОВЩИКА ---
+# --- ЛОГИКА ПЛАНИРОВЩИКА (ПРОВЕРКИ УТРОМ И ВЕЧЕРОМ) ---
 async def morning_checkin():
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT chat_id FROM users")
@@ -64,11 +64,10 @@ async def evening_checkin():
     for (cid,) in users:
         await bot.send_message(cid, "✨ День подходит к концу. Есть планы на завтра?")
 
-# --- ИНСТРУМЕНТЫ (ТЕПЕРЬ РАБОТАЮТ ЧЕРЕЗ ID) ---
+# --- ИНСТРУМЕНТЫ БАЗЫ ДАННЫХ ---
 async def get_today_tasks(chat_id: int, status_filter: str = "all", for_ai: bool = False):
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_NAME) as db:
-        # Теперь достаем и ID задачи (r[0])
         q = "SELECT id, task_text, remind_at, is_completed FROM tasks WHERE chat_id = ? AND remind_at LIKE ?"
         p = [chat_id, f"{today}%"]
         if status_filter == "completed": q += " AND is_completed = 1"
@@ -77,50 +76,35 @@ async def get_today_tasks(chat_id: int, status_filter: str = "all", for_ai: bool
         rows = await cursor.fetchall()
         if not rows: return "Пока задач нет."
         
-        # Если отдаем ИИ - добавляем [ID: x], если человеку - выводим красиво
         res = []
         for r in rows:
             icon = "✅" if r[3] else "⏳"
             time = r[2].split()[1][:5]
-            if for_ai:
-                res.append(f"[ID: {r[0]}] {icon} {r[1]} (в {time})")
-            else:
-                res.append(f"{icon} {r[1]} (в {time})")
+            if for_ai: res.append(f"[ID: {r[0]}] {icon} {r[1]} (в {time})")
+            else: res.append(f"{icon} {r[1]} (в {time})")
                 
         return "\n".join(res) if for_ai else "Вот что у нас в графике:\n\n" + "\n".join(res)
 
 async def add_task(chat_id: int, task_text: str, remind_at: str):
-    # --- 1. УМНАЯ ОБРАБОТКА ВРЕМЕНИ (чиним ошибку '%Y-%m-%d %H:%M:%S') ---
     remind_at = remind_at.strip()
-    if len(remind_at) == 16:  # ИИ забыл секунды: "2026-04-11 21:05"
-        remind_at += ":00"
-    elif len(remind_at) == 5: # ИИ прислал только время: "21:05"
-        today_date = datetime.now().strftime("%Y-%m-%d")
-        remind_at = f"{today_date} {remind_at}:00"
-    elif len(remind_at) == 8: # ИИ прислал время с секундами: "21:05:00"
-        today_date = datetime.now().strftime("%Y-%m-%d")
-        remind_at = f"{today_date} {remind_at}"
+    if len(remind_at) == 16: remind_at += ":00"
+    elif len(remind_at) == 5: remind_at = f"{datetime.now().strftime('%Y-%m-%d')} {remind_at}:00"
+    elif len(remind_at) == 8: remind_at = f"{datetime.now().strftime('%Y-%m-%d')} {remind_at}"
         
-    try:
-        run_date = datetime.strptime(remind_at, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        # На случай, если ИИ выдаст совсем нечитаемый бред
-        return f"Не смог распознать время для задачи '{task_text}'. Повтори, пожалуйста!"
+    try: run_date = datetime.strptime(remind_at, "%Y-%m-%d %H:%M:%S")
+    except ValueError: return f"Не смог распознать время для задачи '{task_text}'. Повтори, пожалуйста!"
 
     job_id = f"job_{datetime.now().timestamp()}"
     
-    # Добавляем в планировщик
-    scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, task_text], id=job_id)
-    
-    # --- 2. ИСПРАВЛЕННЫЙ SQL ЗАПРОС (чиним '5 values for 4 columns') ---
+    # 1. Записываем в базу, чтобы получить уникальный ID задачи
     async with aiosqlite.connect(DB_NAME) as db:
-        # Добавили is_completed в список колонок
-        await db.execute(
-            "INSERT INTO tasks (chat_id, task_text, remind_at, job_id, is_completed) VALUES (?, ?, ?, ?, 0)",
-            (chat_id, task_text, remind_at, job_id)
-        )
+        cursor = await db.execute("INSERT INTO tasks (chat_id, task_text, remind_at, job_id, is_completed) VALUES (?, ?, ?, ?, 0)", (chat_id, task_text, remind_at, job_id))
+        task_id = cursor.lastrowid
         await db.commit()
-        
+
+    # 2. Передаем ID задачи в таймер напоминалки
+    scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, task_id, task_text], id=job_id)
+    
     time_short = remind_at.split()[1][:5]
     return get_random_response("add_task", task_text, time_short)
 
@@ -133,7 +117,7 @@ async def delete_task(chat_id: int, task_id: int):
             except: pass
             await db.execute("DELETE FROM tasks WHERE id = ?", (row[0],))
             await db.commit()
-            return get_random_response("delete_task", row[2]) # row[2] - это реальный текст задачи
+            return get_random_response("delete_task", row[2])
     return get_random_response("not_found", f"ID {task_id}")
 
 async def update_task(chat_id: int, task_id: int, new_text: str = None, new_time: str = None):
@@ -144,39 +128,31 @@ async def update_task(chat_id: int, task_id: int, new_text: str = None, new_time
             t_id, j_id, db_text, db_time = row
             f_text = new_text if new_text else db_text
             
-            # --- УМНАЯ ОБРАБОТКА ВРЕМЕНИ ---
             f_time = db_time
             if new_time:
-                # Если ИИ прислал только время (например "06:30" или "06:30:00")
                 if len(new_time) <= 8:
-                    old_date = db_time.split()[0] # Берем дату от старой задачи
+                    old_date = db_time.split()[0]
                     time_part = new_time if len(new_time) == 8 else f"{new_time}:00"
                     f_time = f"{old_date} {time_part}"
-                # Если ИИ прислал дату и время, но забыл секунды ("2026-04-11 06:30")
-                elif len(new_time) == 16:
-                    f_time = f"{new_time}:00"
-                else:
-                    f_time = new_time
+                elif len(new_time) == 16: f_time = f"{new_time}:00"
+                else: f_time = new_time
             
             try: scheduler.remove_job(j_id)
             except: pass
             
-            # Теперь время 100% в правильном формате, пробуем поставить таймер
             try:
                 run_date = datetime.strptime(f_time, "%Y-%m-%d %H:%M:%S")
-                scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, f_text], id=j_id)
+                # Обязательно передаем task_id в обновленный таймер
+                scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, task_id, f_text], id=j_id)
                 await db.execute("UPDATE tasks SET task_text = ?, remind_at = ? WHERE id = ?", (f_text, f_time, t_id))
                 await db.commit()
                 return get_random_response("update_task", f_text, f_time.split()[1][:5])
-            except ValueError as e:
-                # Если ИИ прислал совсем уж дичь, не ломаем бота, а просим повторить
-                return f"Ой, не понял формат времени ({new_time}). Скажи чуть точнее, пожалуйста!"
-                
+            except ValueError:
+                return f"Ой, не понял формат времени ({new_time}). Скажи точнее!"
     return get_random_response("not_found", f"ID {task_id}")
 
 async def complete_task(chat_id: int, task_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
-        # Сначала узнаем текст задачи, чтобы красиво ответить
         cursor = await db.execute("SELECT task_text FROM tasks WHERE chat_id = ? AND id = ?", (chat_id, task_id))
         row = await cursor.fetchone()
         if row:
@@ -185,28 +161,63 @@ async def complete_task(chat_id: int, task_id: int):
             return get_random_response("complete_task", row[0])
     return get_random_response("not_found", f"ID {task_id}")
 
-async def send_reminder(chat_id: int, task_text: str):
-    await bot.send_message(chat_id, f"🔔 Напоминаю: пора **{task_text.lower()}**!")
+# --- ФУНКЦИИ ИНТЕРАКТИВНЫХ НАПОМИНАНИЙ ---
 
-# --- СХЕМА ДЛЯ ИИ (ИЗМЕНЕНО НА TASK_ID) ---
+async def send_reminder(chat_id: int, task_id: int, task_text: str):
+    """Первичное напоминание, которое заводит таймер на проверку через 5 минут"""
+    await bot.send_message(chat_id, f"🔔 Напоминаю: пора **{task_text.lower()}**!")
+    
+    # Заводим таймер проверки на 5 минут вперед
+    follow_up_time = datetime.now() + timedelta(minutes=5)
+    # Используем уникальный ID для работы планировщика
+    check_job_id = f"check_{task_id}_{datetime.now().timestamp()}"
+    
+    scheduler.add_job(ask_completion, 'date', run_date=follow_up_time, args=[chat_id, task_id, task_text], id=check_job_id)
+
+async def ask_completion(chat_id: int, task_id: int, task_text: str):
+    """Срабатывает через 5 минут и присылает кнопки"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, выполнил", callback_data=f"done_yes_{task_id}"),
+            InlineKeyboardButton(text="❌ Нет еще", callback_data=f"done_no_{task_id}")
+        ]
+    ])
+    await bot.send_message(chat_id, f"Прошло 5 минут. Ты выполнил задачу: '{task_text}'?", reply_markup=keyboard)
+
+# --- ОБРАБОТЧИК КНОПОК (CALLBACK) ---
+@dp.callback_query(F.data.startswith("done_"))
+async def handle_completion_buttons(call: CallbackQuery):
+    # Разбираем данные кнопки: "done_yes_5" превратится в "yes" и "5"
+    parts = call.data.split("_")
+    action = parts[1]
+    task_id = int(parts[2])
+
+    if action == "yes":
+        async with aiosqlite.connect(DB_NAME) as db:
+            await db.execute("UPDATE tasks SET is_completed = 1 WHERE id = ?", (task_id,))
+            await db.commit()
+        await call.message.edit_text("Отлично! Отметил задачу как выполненную ✅")
+    else:
+        await call.message.edit_text("Понял, задача пока висит в планах ⏳")
+
+    # Закрываем событие нажатия, чтобы часики на кнопке пропали
+    await call.answer()
+
+
+# --- GROQ LOGIC ---
 tools = [
     {"type": "function", "function": {"name": "add_task_tool", "description": "Add task", "parameters": {"type": "object", "properties": {"task_text": {"type": "string"}, "remind_at": {"type": "string"}}, "required": ["task_text", "remind_at"]}}},
     {"type": "function", "function": {"name": "delete_task_tool", "description": "Delete a task by its ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}}},
-    {"type": "function", "function": {"name": "update_task_tool", "description": "Update task by its ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}, "new_text": {"type": "string"}, "new_time": {"type": "string", "description": "FORMAT STRICTLY: YYYY-MM-DD HH:MM:SS"}}, "required": ["task_id"]}}},    
-    {"type": "function", "function": {"name": "get_today_tasks_tool", "description": "Show tasks to the user", "parameters": {"type": "object", "properties": {"status_filter": {"type": "string", "enum": ["all", "completed", "pending"]}}}}},
-    {"type": "function", "function": {"name": "complete_task_tool", "description": "Mark task as completed by its ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}}}
+    {"type": "function", "function": {"name": "update_task_tool", "description": "Update task by its ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}, "new_text": {"type": "string"}, "new_time": {"type": "string", "description": "FORMAT STRICTLY: YYYY-MM-DD HH:MM:SS"}}, "required": ["task_id"]}}},
+    {"type": "function", "function": {"name": "get_today_tasks_tool", "description": "Show tasks", "parameters": {"type": "object", "properties": {"status_filter": {"type": "string", "enum": ["all", "completed", "pending"]}}}}},
+    {"type": "function", "function": {"name": "complete_task_tool", "description": "Complete task by ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}}}
 ]
 
 async def process_logic(chat_id: int, text: str):
     cur_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Передаем ИИ список с ID
     ctx = await get_today_tasks(chat_id, "all", for_ai=True)
     
-    sys_prompt = (
-        f"Time: {cur_time}. Tasks:\n{ctx}\n\n"
-        "ВАЖНОЕ ПРАВИЛО: Для удаления, обновления или отметки задачи как выполненной "
-        "используй СТРОГО числовой ID из списка (например, 5), а не текст задачи."
-    )
+    sys_prompt = f"Time: {cur_time}. Tasks:\n{ctx}\n\nВАЖНОЕ ПРАВИЛО: Для удаления, обновления или отметки задачи используй СТРОГО числовой ID из списка."
     
     resp = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
