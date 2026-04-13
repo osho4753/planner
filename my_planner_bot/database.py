@@ -104,3 +104,28 @@ async def complete_task_in_db(chat_id: int, task_id: int):
             await db.commit()
             return row[0]
     return None
+
+async def get_raw_tasks(chat_id: int, target_date: str):
+    """Возвращает список задач в виде кортежей для построения кнопок"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "SELECT id, task_text, is_completed, task_time FROM tasks WHERE chat_id = ? AND task_time LIKE ?",
+            (chat_id, f"{target_date}%")
+        )
+        return await cursor.fetchall()
+
+async def toggle_task_status(task_id: int):
+    """Меняет статус задачи (выполнена <-> не выполнена)"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT is_completed FROM tasks WHERE id = ?", (task_id,))
+        row = await cursor.fetchone()
+        if row:
+            new_status = 0 if row[0] == 1 else 1
+            await db.execute("UPDATE tasks SET is_completed = ? WHERE id = ?", (new_status, task_id))
+            await db.commit()
+async def get_task_time(task_id: int):
+    """Достает реальное время события по ID"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT task_time FROM tasks WHERE id = ?", (task_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else None

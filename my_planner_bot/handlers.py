@@ -1,8 +1,12 @@
 import os
 import tempfile
 import random
+from datetime import datetime, timedelta
+
 from aiogram import F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, CallbackQuery
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 from config import bot, dp, client, STATUS_PHRASES
 import database as db
 import ai_logic
@@ -14,20 +18,77 @@ def get_main_menu():
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-
 @dp.message(F.text == "/start")
 async def cmd_start(m: Message):
     await db.add_user(m.chat.id)
     await m.answer("👋 Привет! Я твой менеджер. Буду присылать планы утром и вечером.", reply_markup=get_main_menu())
 
+# --- НОВЫЙ БЛОК: ИНТЕРАКТИВНЫЕ ЧЕКБОКСЫ ---
+@dp.message(F.text.in_(["📅 Планы на сегодня", "🌅 На завтра"]))
+async def show_interactive_plans(m: Message):
+    # Определяем, какую дату просит пользователь
+    if m.text == "📅 Планы на сегодня":
+        target_date = datetime.now().strftime("%Y-%m-%d")
+        header = "Твои планы на сегодня (нажимай, чтобы отметить):"
+    else:
+        target_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        header = "Твои планы на завтра (нажимай, чтобы отметить):"
+        
+    # Достаем список задач из базы
+    tasks = await db.get_raw_tasks(m.chat.id, target_date)
+    
+    if not tasks:
+        date_str = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d.%m")
+        await m.answer(f"На {date_str} планов пока нет! ☕")
+        return
+        
+    # Строим клавиатуру из задач
+    builder = InlineKeyboardBuilder()
+    for t_id, text, is_completed, t_time in tasks:
+        icon = "✅" if is_completed else "⬜️"
+        time_short = t_time.split()[1][:5] if t_time else "Весь день"
+        
+        builder.row(InlineKeyboardButton(
+            text=f"{icon} {time_short} | {text}", 
+            callback_data=f"check_{t_id}_{target_date}" # передаем дату, чтобы знать, что перерисовывать
+        ))
+        
+    await m.answer(header, reply_markup=builder.as_markup())
+
+@dp.callback_query(F.data.startswith("check_"))
+async def toggle_checkbox(call: CallbackQuery):
+    parts = call.data.split("_")
+    task_id = int(parts[1])
+    target_date = parts[2]
+    
+    # 1. Меняем статус в базе (0 на 1, или 1 на 0)
+    await db.toggle_task_status(task_id)
+    
+    # 2. Получаем обновленный список задач
+    tasks = await db.get_raw_tasks(call.message.chat.id, target_date)
+    
+    # 3. Перерисовываем клавиатуру с новыми галочками
+    builder = InlineKeyboardBuilder()
+    for t_id, text, is_completed, t_time in tasks:
+        icon = "✅" if is_completed else "⬜️"
+        time_short = t_time.split()[1][:5] if t_time else "Весь день"
+        builder.row(InlineKeyboardButton(
+            text=f"{icon} {time_short} | {text}", 
+            callback_data=f"check_{t_id}_{target_date}"
+        ))
+        
+    # Мгновенно обновляем сообщение
+    await call.message.edit_reply_markup(reply_markup=builder.as_markup())
+    await call.answer()
+# ------------------------------------------
+
 @dp.message(F.text)
 async def handle_text(m: Message):
     txt = m.text
-    if txt == "📅 Мои планы на сегодня": txt = "Покажи мои планы на сегодня"
-    elif txt == "✅ Что я уже сделал?": txt = "Покажи выполненные задачи на сегодня"
+    # Обрати внимание: мы убрали отсюда "На сегодня" и "На завтра", 
+    # так как их теперь ловит функция show_interactive_plans выше
+    if txt == "✅ Что сделано?": txt = "Покажи выполненные задачи на сегодня"
     elif txt == "❓ Что осталось?": txt = "Покажи, что мне осталось сделать сегодня"
-    elif txt == "🌅 На завтра": 
-        txt = "Покажи мои планы на завтра"
 
     status = await m.reply(f"⏳ {random.choice(STATUS_PHRASES)}")
     try:
