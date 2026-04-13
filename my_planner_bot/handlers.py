@@ -29,10 +29,10 @@ async def show_interactive_plans(m: Message):
     # Определяем, какую дату просит пользователь
     if m.text == "📅 Планы на сегодня":
         target_date = datetime.now().strftime("%Y-%m-%d")
-        header = "Твои планы на сегодня (нажимай, чтобы отметить):"
+        header = "Твои планы на сегодня (по нажатию отмечаешь сделанным):"
     else:
         target_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-        header = "Твои планы на завтра (нажимай, чтобы отметить):"
+        header = "Твои планы на завтра (по нажатию отмечаешь сделанным):"
         
     # Достаем список задач из базы
     tasks = await db.get_raw_tasks(m.chat.id, target_date)

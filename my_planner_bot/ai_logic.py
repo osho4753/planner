@@ -29,6 +29,23 @@ tools = [
     {
         "type": "function", 
         "function": {
+            "name": "update_task_tool", 
+            "description": "Изменить существующую задачу по ID.", 
+            "parameters": {
+                "type": "object", 
+                "properties": {
+                    "task_id": {"type": "integer"}, 
+                    "new_text": {"type": "string", "description": "Новое описание задачи"}, 
+                    "new_task_time": {"type": "string", "description": "YYYY-MM-DD HH:MM:SS - Новое время самого события"},
+                    "new_remind_time": {"type": "string", "description": "YYYY-MM-DD HH:MM:SS - Новое время уведомления"}
+                }, 
+                "required": ["task_id"]
+            }
+        }
+    },
+    {
+        "type": "function", 
+        "function": {
             "name": "get_tasks_tool", 
             "description": "Показать список задач на конкретную дату.", 
             "parameters": {
@@ -41,55 +58,41 @@ tools = [
             }
         }
     },
-    {
-    "type": "function", 
-    "function": {
-        "name": "update_task_tool", 
-        "description": "Изменить существующую задачу по ID.", 
-        "parameters": {
-            "type": "object", 
-            "properties": {
-                "task_id": {"type": "integer"}, 
-                "new_text": {"type": "string", "description": "Новое описание задачи"}, 
-                "new_task_time": {"type": "string", "description": "YYYY-MM-DD HH:MM:SS - Новое время самого события"},
-                "new_remind_time": {"type": "string", "description": "YYYY-MM-DD HH:MM:SS - Новое время уведомления"}
-            }, 
-            "required": ["task_id"]
-        }
-    }
-},
     {"type": "function", "function": {"name": "complete_task_tool", "description": "Пометить как выполненную по ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}}}
 ]
 
 # --- ФУНКЦИИ-ПОСРЕДНИКИ ---
 async def process_add_task(chat_id, args):
     task_text = args["task_text"]
-    task_time = args["task_time"]
-    remind_time = args["remind_time"]
+    task_time = args.get("task_time", "")
+    remind_time = args.get("remind_time", "")
     
-    # Защита от кривого времени от ИИ (дописываем секунды)
+    # Защита от кривого времени от ИИ
     if len(task_time) == 16: task_time += ":00"
     if len(remind_time) == 16: remind_time += ":00"
     
     try:
         run_date = datetime.strptime(remind_time, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        return f"Не смог распознать время."
+        return f"Не смог распознать время. Уточни, пожалуйста!"
 
     job_id = f"job_{datetime.now().timestamp()}"
     task_id = await db.save_task_to_db(chat_id, task_text, task_time, remind_time, job_id)
     scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, task_id, task_text], id=job_id)
     
-    return db.get_random_response("add_task", task_text, task_time.split()[1][:5])
+    time_short = task_time.split()[1][:5] if " " in task_time else ""
+    return db.get_random_response("add_task", task_text, time_short)
 
 async def process_logic(chat_id: int, text: str):
     cur_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ctx = await db.get_today_tasks(chat_id, "all", for_ai=True)
+    today_date = datetime.now().strftime("%Y-%m-%d")
     
-    # Работа с историей
+    # ВОТ ЗДЕСЬ ИСПРАВЛЕНА ОШИБКА (вызываем правильную функцию и передаем сегодняшнюю дату)
+    ctx = await db.get_tasks_by_date(chat_id, target_date=today_date, status_filter="all", for_ai=True)
+    
     if chat_id not in user_history: user_history[chat_id] = []
     user_history[chat_id].append({"role": "user", "content": text})
-    user_history[chat_id] = user_history[chat_id][-6:] # Храним последние 6 сообщений
+    user_history[chat_id] = user_history[chat_id][-6:]
     
     sys_prompt = {"role": "system", "content": f"Time: {cur_time}. Tasks:\n{ctx}\n\nУчитывай историю переписки. Если просят напомнить что-то из прошлых сообщений - используй контекст. Для действий используй инструменты и строго ID задач."}
     
@@ -118,6 +121,27 @@ async def process_logic(chat_id: int, text: str):
                     try: scheduler.remove_job(row[1])
                     except: pass
                     results.append(db.get_random_response("delete_task", row[2]))
+            elif fn == "update_task_tool":
+                res = await db.update_task_in_db(
+                    chat_id, 
+                    args["task_id"], 
+                    new_text=args.get("new_text"), 
+                    new_task_time=args.get("new_task_time"),
+                    new_remind_time=args.get("new_remind_time")
+                )
+                if res:
+                    # Перезапускаем таймер с новым временем
+                    try: scheduler.remove_job(res["job_id"])
+                    except: pass
+                    try:
+                        run_date = datetime.strptime(res["remind_time"], "%Y-%m-%d %H:%M:%S")
+                        scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, args["task_id"], res["text"]], id=res["job_id"])
+                    except ValueError:
+                        pass
+                    time_short = res["task_time"].split()[1][:5] if " " in res["task_time"] else ""
+                    results.append(db.get_random_response("update_task", res["text"], time_short))
+                else:
+                    results.append(db.get_random_response("not_found", f"ID {args['task_id']}"))
             elif fn == "get_tasks_tool":
                 results.append(await db.get_tasks_by_date(
                     chat_id, 
@@ -128,13 +152,5 @@ async def process_logic(chat_id: int, text: str):
             elif fn == "complete_task_tool":
                 task_text = await db.complete_task_in_db(chat_id, args["task_id"])
                 results.append(db.get_random_response("complete_task", task_text) if task_text else "Не найдено")
-            elif fn == "update_task_tool":
-                results.append(await db.update_task(
-                    chat_id, 
-                    args["task_id"], 
-                    new_text=args.get("new_text"), 
-                    new_task_time=args.get("new_task_time"), 
-                    new_remind_time=args.get("new_remind_time")
-                ))
                 
     return "\n\n".join(results) if results else msg.content

@@ -129,3 +129,18 @@ async def get_task_time(task_id: int):
         cursor = await db.execute("SELECT task_time FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         return row[0] if row else None
+    
+async def update_task_in_db(chat_id: int, task_id: int, new_text: str = None, new_task_time: str = None, new_remind_time: str = None):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT id, job_id, task_text, task_time, remind_time FROM tasks WHERE chat_id = ? AND id = ?", (chat_id, task_id))
+        row = await cursor.fetchone()
+        if row:
+            t_id, j_id, db_text, db_task_time, db_remind_time = row
+            f_text = new_text if new_text else db_text
+            f_task_time = new_task_time if new_task_time else db_task_time
+            f_remind_time = new_remind_time if new_remind_time else db_remind_time
+            
+            await db.execute("UPDATE tasks SET task_text = ?, task_time = ?, remind_time = ? WHERE id = ?", (f_text, f_task_time, f_remind_time, t_id))
+            await db.commit()
+            return {"job_id": j_id, "text": f_text, "remind_time": f_remind_time, "task_time": f_task_time}
+    return None
