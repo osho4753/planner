@@ -1,5 +1,4 @@
-import datetime
-
+from datetime import datetime
 import aiosqlite
 import random
 from config import DB_NAME, BOT_RESPONSES
