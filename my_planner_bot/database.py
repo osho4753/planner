@@ -9,7 +9,8 @@ def get_random_response(action: str, task: str, time: str = ""):
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY)")
-        # Добавили task_time
+        
+        # Создаем таблицу для новых пользователей
         await db.execute('''CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
             chat_id INTEGER, 
@@ -19,7 +20,22 @@ async def init_db():
             job_id TEXT, 
             is_completed INTEGER DEFAULT 0
         )''')
+        
+        # --- УМНОЕ ОБНОВЛЕНИЕ ДЛЯ СТАРЫХ БАЗ ---
+        # Пытаемся добавить новые колонки. Если они уже есть, база выдаст ошибку, 
+        # но except её проигнорирует, и бот не сломается.
+        try: 
+            await db.execute("ALTER TABLE tasks ADD COLUMN task_time TEXT")
+        except: 
+            pass
+            
+        try: 
+            await db.execute("ALTER TABLE tasks ADD COLUMN remind_time TEXT")
+        except: 
+            pass
+            
         await db.commit()
+        
 
 async def get_users():
     async with aiosqlite.connect(DB_NAME) as db:
