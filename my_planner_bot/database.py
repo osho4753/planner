@@ -1,3 +1,5 @@
+import datetime
+
 import aiosqlite
 import random
 from config import DB_NAME, BOT_RESPONSES
@@ -21,9 +23,6 @@ async def init_db():
             is_completed INTEGER DEFAULT 0
         )''')
         
-        # --- УМНОЕ ОБНОВЛЕНИЕ ДЛЯ СТАРЫХ БАЗ ---
-        # Пытаемся добавить новые колонки. Если они уже есть, база выдаст ошибку, 
-        # но except её проигнорирует, и бот не сломается.
         try: 
             await db.execute("ALTER TABLE tasks ADD COLUMN task_time TEXT")
         except: 
@@ -35,7 +34,7 @@ async def init_db():
             pass
             
         await db.commit()
-        
+
 
 async def get_users():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -47,28 +46,35 @@ async def add_user(chat_id: int):
         await db.execute("INSERT OR IGNORE INTO users (chat_id) VALUES (?)", (chat_id,))
         await db.commit()
 
-async def get_today_tasks(chat_id: int, status_filter: str = "all", for_ai: bool = False):
-    from datetime import datetime
-    today = datetime.now().strftime("%Y-%m-%d")
+async def get_tasks_by_date(chat_id: int, target_date: str, status_filter: str = "all", for_ai: bool = False):
+    """
+    target_date ожидает формат 'YYYY-MM-DD'.
+    Если ИИ или юзер не укажут дату, по умолчанию берем сегодня.
+    """
     async with aiosqlite.connect(DB_NAME) as db:
+        # Ищем задачи, которые начинаются с указанной даты
         q = "SELECT id, task_text, task_time, is_completed FROM tasks WHERE chat_id = ? AND task_time LIKE ?"
-        p = [chat_id, f"{today}%"]
+        p = [chat_id, f"{target_date}%"]
+        
         if status_filter == "completed": q += " AND is_completed = 1"
         elif status_filter == "pending": q += " AND is_completed = 0"
+        
         cursor = await db.execute(q, p)
         rows = await cursor.fetchall()
         
-        if not rows: return "Пока задач нет."
+        date_str = datetime.strptime(target_date, "%Y-%m-%d").strftime("%d.%m")
+        if not rows: return f"На {date_str} планов пока нет."
         
         res = []
         for r in rows:
             icon = "✅" if r[3] else "⏳"
             time = r[2].split()[1][:5] if r[2] else "Весь день"
-            if for_ai: res.append(f"[ID: {r[0]}] {icon} {r[1]} (Событие в {time})")
+            if for_ai: res.append(f"[ID: {r[0]}] {icon} {r[1]} (в {time})")
             else: res.append(f"{icon} {r[1]} (в {time})")
                 
-        return "\n".join(res) if for_ai else "Вот что у нас в графике:\n\n" + "\n".join(res)
-
+        header = f"📅 Планы на {date_str}:\n\n"
+        return "\n".join(res) if for_ai else header + "\n".join(res)
+    
 async def save_task_to_db(chat_id: int, task_text: str, task_time: str, remind_time: str, job_id: str):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(

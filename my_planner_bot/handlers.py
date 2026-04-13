@@ -8,8 +8,12 @@ import database as db
 import ai_logic
 
 def get_main_menu():
-    buttons = [[KeyboardButton(text="📅 Мои планы на сегодня")], [KeyboardButton(text="✅ Что я уже сделал?"), KeyboardButton(text="❓ Что осталось?")]]
+    buttons = [
+        [KeyboardButton(text="📅 Планы на сегодня"), KeyboardButton(text="🌅 На завтра")],
+        [KeyboardButton(text="✅ Что сделано?"), KeyboardButton(text="❓ Что осталось?")]
+    ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
 
 @dp.message(F.text == "/start")
 async def cmd_start(m: Message):
@@ -22,6 +26,8 @@ async def handle_text(m: Message):
     if txt == "📅 Мои планы на сегодня": txt = "Покажи мои планы на сегодня"
     elif txt == "✅ Что я уже сделал?": txt = "Покажи выполненные задачи на сегодня"
     elif txt == "❓ Что осталось?": txt = "Покажи, что мне осталось сделать сегодня"
+    elif txt == "🌅 На завтра": 
+        txt = "Покажи мои планы на завтра"
 
     status = await m.reply(f"⏳ {random.choice(STATUS_PHRASES)}")
     try:

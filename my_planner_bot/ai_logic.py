@@ -26,7 +26,38 @@ tools = [
         }
     },
     {"type": "function", "function": {"name": "delete_task_tool", "description": "Удалить задачу по ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}}},
-    {"type": "function", "function": {"name": "get_today_tasks_tool", "description": "Показать планы", "parameters": {"type": "object", "properties": {"status_filter": {"type": "string", "enum": ["all", "completed", "pending"]}}}}},
+    {
+        "type": "function", 
+        "function": {
+            "name": "get_tasks_tool", 
+            "description": "Показать список задач на конкретную дату.", 
+            "parameters": {
+                "type": "object", 
+                "properties": {
+                    "target_date": {"type": "string", "description": "Дата в формате YYYY-MM-DD"},
+                    "status_filter": {"type": "string", "enum": ["all", "completed", "pending"]}
+                }, 
+                "required": ["target_date"]
+            }
+        }
+    },
+    {
+    "type": "function", 
+    "function": {
+        "name": "update_task_tool", 
+        "description": "Изменить существующую задачу по ID.", 
+        "parameters": {
+            "type": "object", 
+            "properties": {
+                "task_id": {"type": "integer"}, 
+                "new_text": {"type": "string", "description": "Новое описание задачи"}, 
+                "new_task_time": {"type": "string", "description": "YYYY-MM-DD HH:MM:SS - Новое время самого события"},
+                "new_remind_time": {"type": "string", "description": "YYYY-MM-DD HH:MM:SS - Новое время уведомления"}
+            }, 
+            "required": ["task_id"]
+        }
+    }
+},
     {"type": "function", "function": {"name": "complete_task_tool", "description": "Пометить как выполненную по ID", "parameters": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]}}}
 ]
 
@@ -87,10 +118,23 @@ async def process_logic(chat_id: int, text: str):
                     try: scheduler.remove_job(row[1])
                     except: pass
                     results.append(db.get_random_response("delete_task", row[2]))
-            elif fn == "get_today_tasks_tool":
-                results.append(await db.get_today_tasks(chat_id, args.get("status_filter", "all"), for_ai=False))
+            elif fn == "get_tasks_tool":
+                results.append(await db.get_tasks_by_date(
+                    chat_id, 
+                    args["target_date"], 
+                    args.get("status_filter", "all"), 
+                    for_ai=False
+                ))
             elif fn == "complete_task_tool":
                 task_text = await db.complete_task_in_db(chat_id, args["task_id"])
                 results.append(db.get_random_response("complete_task", task_text) if task_text else "Не найдено")
+            elif fn == "update_task_tool":
+                results.append(await db.update_task(
+                    chat_id, 
+                    args["task_id"], 
+                    new_text=args.get("new_text"), 
+                    new_task_time=args.get("new_task_time"), 
+                    new_remind_time=args.get("new_remind_time")
+                ))
                 
     return "\n\n".join(results) if results else msg.content
