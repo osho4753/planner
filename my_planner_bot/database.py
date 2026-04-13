@@ -1,0 +1,84 @@
+import aiosqlite
+import random
+from config import DB_NAME, BOT_RESPONSES
+
+def get_random_response(action: str, task: str, time: str = ""):
+    templates = BOT_RESPONSES.get(action, [f"Готово: {task}"])
+    return random.choice(templates).format(task=task, time=time)
+
+async def init_db():
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY)")
+        # Добавили task_time
+        await db.execute('''CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            chat_id INTEGER, 
+            task_text TEXT, 
+            task_time TEXT, 
+            remind_time TEXT, 
+            job_id TEXT, 
+            is_completed INTEGER DEFAULT 0
+        )''')
+        await db.commit()
+
+async def get_users():
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT chat_id FROM users")
+        return await cursor.fetchall()
+
+async def add_user(chat_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("INSERT OR IGNORE INTO users (chat_id) VALUES (?)", (chat_id,))
+        await db.commit()
+
+async def get_today_tasks(chat_id: int, status_filter: str = "all", for_ai: bool = False):
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_NAME) as db:
+        q = "SELECT id, task_text, task_time, is_completed FROM tasks WHERE chat_id = ? AND task_time LIKE ?"
+        p = [chat_id, f"{today}%"]
+        if status_filter == "completed": q += " AND is_completed = 1"
+        elif status_filter == "pending": q += " AND is_completed = 0"
+        cursor = await db.execute(q, p)
+        rows = await cursor.fetchall()
+        
+        if not rows: return "Пока задач нет."
+        
+        res = []
+        for r in rows:
+            icon = "✅" if r[3] else "⏳"
+            time = r[2].split()[1][:5] if r[2] else "Весь день"
+            if for_ai: res.append(f"[ID: {r[0]}] {icon} {r[1]} (Событие в {time})")
+            else: res.append(f"{icon} {r[1]} (в {time})")
+                
+        return "\n".join(res) if for_ai else "Вот что у нас в графике:\n\n" + "\n".join(res)
+
+async def save_task_to_db(chat_id: int, task_text: str, task_time: str, remind_time: str, job_id: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute(
+            "INSERT INTO tasks (chat_id, task_text, task_time, remind_time, job_id, is_completed) VALUES (?,?,?,?,?,0)", 
+            (chat_id, task_text, task_time, remind_time, job_id)
+        )
+        task_id = cursor.lastrowid
+        await db.commit()
+        return task_id
+
+async def delete_task_from_db(chat_id: int, task_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT id, job_id, task_text FROM tasks WHERE chat_id = ? AND id = ?", (chat_id, task_id))
+        row = await cursor.fetchone()
+        if row:
+            await db.execute("DELETE FROM tasks WHERE id = ?", (row[0],))
+            await db.commit()
+            return row # Возвращаем данные для удаления таймера
+    return None
+
+async def complete_task_in_db(chat_id: int, task_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT task_text FROM tasks WHERE chat_id = ? AND id = ?", (chat_id, task_id))
+        row = await cursor.fetchone()
+        if row:
+            await db.execute("UPDATE tasks SET is_completed = 1 WHERE id = ?", (task_id,))
+            await db.commit()
+            return row[0]
+    return None
