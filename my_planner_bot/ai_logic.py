@@ -80,21 +80,23 @@ async def process_add_task(chat_id, args):
     task_id = await db.save_task_to_db(chat_id, task_text, task_time, remind_time, job_id)
     scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, task_id, task_text], id=job_id)
     
-    time_short = task_time.split()[1][:5] if " " in task_time else ""
-    return db.get_random_response("add_task", task_text, time_short)
+    # ВОТ ЭТИ 3 СТРОЧКИ НОВЫЕ:
+    time_short = task_time.split()[1][:5] if " " in task_time else "Весь день"
+    remind_short = remind_time.split()[1][:5] if " " in remind_time else ""
+    return db.get_random_response("add_task", task_text, time_short, remind_short)
 
 async def process_logic(chat_id: int, text: str):
     cur_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today_date = datetime.now().strftime("%Y-%m-%d")
     
-    # ВОТ ЗДЕСЬ ИСПРАВЛЕНА ОШИБКА (вызываем правильную функцию и передаем сегодняшнюю дату)
     ctx = await db.get_tasks_by_date(chat_id, target_date=today_date, status_filter="all", for_ai=True)
     
     if chat_id not in user_history: user_history[chat_id] = []
     user_history[chat_id].append({"role": "user", "content": text})
     user_history[chat_id] = user_history[chat_id][-6:]
     
-    sys_prompt = {"role": "system", "content": f"Time: {cur_time}. Tasks:\n{ctx}\n\nУчитывай историю переписки. Если просят напомнить что-то из прошлых сообщений - используй контекст. Для действий используй инструменты и строго ID задач."}
+    # ОБНОВЛЕННЫЙ ПРОМПТ (Добавили жесткое правило про правки)
+    sys_prompt = {"role": "system", "content": f"Time: {cur_time}. Tasks:\n{ctx}\n\nУчитывай историю переписки. ВАЖНО: Если пользователь просит изменить время для только что созданной задачи (например 'хотя давай за 10 минут'), Обязательно используй update_task_tool, а не add_task_tool. Для действий используй строго ID задач."}
     
     messages = [sys_prompt] + user_history[chat_id]
     
@@ -130,7 +132,6 @@ async def process_logic(chat_id: int, text: str):
                     new_remind_time=args.get("new_remind_time")
                 )
                 if res:
-                    # Перезапускаем таймер с новым временем
                     try: scheduler.remove_job(res["job_id"])
                     except: pass
                     try:
@@ -138,10 +139,12 @@ async def process_logic(chat_id: int, text: str):
                         scheduler.add_job(send_reminder, 'date', run_date=run_date, args=[chat_id, args["task_id"], res["text"]], id=res["job_id"])
                     except ValueError:
                         pass
-                    time_short = res["task_time"].split()[1][:5] if " " in res["task_time"] else ""
-                    results.append(db.get_random_response("update_task", res["text"], time_short))
+                    
+                    time_short = res["task_time"].split()[1][:5] if res["task_time"] and " " in res["task_time"] else "Весь день"
+                    remind_short = res["remind_time"].split()[1][:5] if res["remind_time"] and " " in res["remind_time"] else ""
+                    results.append(db.get_random_response("update_task", res["text"], time_short, remind_short))
                 else:
-                    results.append(db.get_random_response("not_found", f"ID {args['task_id']}"))
+                    results.append(db.get_random_response("not_found", f"ID {args['task_id']}"))            
             elif fn == "get_tasks_tool":
                 results.append(await db.get_tasks_by_date(
                     chat_id, 

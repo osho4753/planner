@@ -3,9 +3,10 @@ import aiosqlite
 import random
 from config import DB_NAME, BOT_RESPONSES
 
-def get_random_response(action: str, task: str, time: str = ""):
+def get_random_response(action: str, task: str, time: str = "", remind_time: str = ""):
     templates = BOT_RESPONSES.get(action, [f"Готово: {task}"])
-    return random.choice(templates).format(task=task, time=time)
+    template = random.choice(templates)
+    return template.replace("{task}", task).replace("{time}", time).replace("{remind_time}", remind_time)
 
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -143,3 +144,9 @@ async def update_task_in_db(chat_id: int, task_id: int, new_text: str = None, ne
             await db.commit()
             return {"job_id": j_id, "text": f_text, "remind_time": f_remind_time, "task_time": f_task_time}
     return None
+async def is_task_completed(task_id: int) -> bool:
+    """Проверяет, выполнена ли задача на данный момент"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT is_completed FROM tasks WHERE id = ?", (task_id,))
+        row = await cursor.fetchone()
+        return bool(row and row[0] == 1)
