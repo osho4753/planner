@@ -14,14 +14,18 @@ import ai_logic
 def get_main_menu():
     buttons = [
         [KeyboardButton(text="📅 Планы на сегодня"), KeyboardButton(text="🌅 На завтра")],
-        [KeyboardButton(text="✅ Что сделано?"), KeyboardButton(text="❓ Что осталось?")]
+        [KeyboardButton(text="✅ Что сделано?"), KeyboardButton(text="❓ Что осталось?")],
+        [KeyboardButton(text="⏰ Часовой пояс (/tz)")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 @dp.message(F.text == "/start")
 async def cmd_start(m: Message):
     await db.add_user(m.chat.id)
-    await m.answer("👋 Привет! Я твой менеджер. Буду присылать планы утром и вечером.", reply_markup=get_main_menu())
+    await m.answer(
+        "👋 Привет! Я твой умный менеджер. \n\nЧтобы я будил тебя и присылал напоминания вовремя, **напиши, в каком городе ты находишься?** 🌍", 
+        reply_markup=get_main_menu()
+    )
 
 # --- НОВЫЙ БЛОК: ИНТЕРАКТИВНЫЕ ЧЕКБОКСЫ ---
 @dp.message(F.text.in_(["📅 Планы на сегодня", "🌅 На завтра"]))

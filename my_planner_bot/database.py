@@ -8,11 +8,17 @@ def get_random_response(action: str, task: str, time: str = "", remind_time: str
     template = random.choice(templates)
     return template.replace("{task}", task).replace("{time}", time).replace("{remind_time}", remind_time)
 
+# --- ИЗМЕНЕННАЯ ФУНКЦИЯ ИНИЦИАЛИЗАЦИИ ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY)")
+        # Добавили tz_offset DEFAULT 3 (по умолчанию Москва UTC+3)
+        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, tz_offset INTEGER DEFAULT 3)")
         
-        # Создаем таблицу для новых пользователей
+        try: 
+            await db.execute("ALTER TABLE users ADD COLUMN tz_offset INTEGER DEFAULT 3")
+        except: 
+            pass
+
         await db.execute('''CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
             chat_id INTEGER, 
@@ -22,20 +28,32 @@ async def init_db():
             job_id TEXT, 
             is_completed INTEGER DEFAULT 0
         )''')
-        
-        try: 
-            await db.execute("ALTER TABLE tasks ADD COLUMN task_time TEXT")
-        except: 
-            pass
-            
-        try: 
-            await db.execute("ALTER TABLE tasks ADD COLUMN remind_time TEXT")
-        except: 
-            pass
-            
+        try: await db.execute("ALTER TABLE tasks ADD COLUMN task_time TEXT")
+        except: pass
+        try: await db.execute("ALTER TABLE tasks ADD COLUMN remind_time TEXT")
+        except: pass
         await db.commit()
 
+# --- НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ЧАСОВЫМ ПОЯСОМ ---
+async def get_user_tz(chat_id: int) -> int:
+    """Получает часовой пояс пользователя (смещение в часах)"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT tz_offset FROM users WHERE chat_id = ?", (chat_id,))
+        row = await cursor.fetchone()
+        return row[0] if row else 3 # 3 по умолчанию
 
+async def set_user_tz(chat_id: int, offset: int):
+    """Сохраняет новый часовой пояс пользователя"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET tz_offset = ? WHERE chat_id = ?", (offset, chat_id))
+        await db.commit()
+
+# --- ИЗМЕНЕННАЯ ФУНКЦИЯ ДЛЯ ЧЕК-ИНОВ ---
+async def get_users_with_tz():
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT chat_id, tz_offset FROM users")
+        return await cursor.fetchall()
+    
 async def get_users():
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT chat_id FROM users")
@@ -150,3 +168,12 @@ async def is_task_completed(task_id: int) -> bool:
         cursor = await db.execute("SELECT is_completed FROM tasks WHERE id = ?", (task_id,))
         row = await cursor.fetchone()
         return bool(row and row[0] == 1)
+
+async def get_active_reminders():
+    """Достает все невыполненные задачи для восстановления таймеров"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Берем только те, которые не завершены и у которых есть remind_time
+        cursor = await db.execute(
+            "SELECT id, chat_id, task_text, remind_time, job_id FROM tasks WHERE is_completed = 0 AND remind_time IS NOT NULL AND remind_time != ''"
+        )
+        return await cursor.fetchall()

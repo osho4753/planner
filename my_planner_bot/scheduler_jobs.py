@@ -12,16 +12,37 @@ async def send_reminder(chat_id: int, task_id: int, task_text: str):
     
     task_time_str = await db.get_task_time(task_id)
     
+    # Задаем фоллоу-ап по умолчанию: 5 минут после текущего момента (напоминания)
+    follow_up_time = datetime.now() + timedelta(minutes=5)
+    
     if task_time_str:
-        task_time = datetime.strptime(task_time_str, "%Y-%m-%d %H:%M:%S")
-        follow_up_time = task_time + timedelta(minutes=5)
+        try:
+            # Пытаемся распарсить точное время события
+            task_time = datetime.strptime(task_time_str, "%Y-%m-%d %H:%M:%S")
+            follow_up_time = task_time + timedelta(minutes=5)
+        except ValueError:
+            # Если в базе лежит просто дата "2024-05-20" или кривой формат, 
+            # мы просто игнорируем ошибку и используем follow_up_time по умолчанию
+            pass
         
-        if follow_up_time < datetime.now():
-            follow_up_time = datetime.now() + timedelta(minutes=1)
-            
-        check_job_id = f"check_{task_id}_{datetime.now().timestamp()}"
-        scheduler.add_job(ask_completion, 'date', run_date=follow_up_time, args=[chat_id, task_id, task_text], id=check_job_id)
-
+    # Защита от отправки в прошлое
+    if follow_up_time < datetime.now():
+        follow_up_time = datetime.now() + timedelta(minutes=1)
+        
+    check_job_id = f"check_{task_id}_{datetime.now().timestamp()}"
+    
+    # Добавляем try-except на случай, если планировщик вдруг не примет параметры
+    try:
+        scheduler.add_job(
+            ask_completion, 
+            'date', 
+            run_date=follow_up_time, 
+            args=[chat_id, task_id, task_text], 
+            id=check_job_id
+        )
+    except Exception as e:
+        print(f"⚠️ Не удалось запланировать проверку выполнения для задачи {task_id}: {e}")
+        
 async def ask_completion(chat_id: int, task_id: int, task_text: str):
     # --- ПРОВЕРКА 2: Вдруг юзер выполнил задачу за эти 5 минут? ---
     if await db.is_task_completed(task_id):
