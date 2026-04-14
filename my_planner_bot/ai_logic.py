@@ -67,7 +67,7 @@ tools = [
                 "type": "object", 
                 "properties": {
                     "offset": {
-                        "type": "integer", 
+                        "type": "string", 
                         "description": "Смещение города от UTC в часах (например, 3 для Москвы, 5 для Екатеринбурга, 7 для Новосибирска)"
                     }
                 }, 
@@ -200,7 +200,7 @@ async def process_logic(chat_id: int, text: str):
                 else:
                     results.append(db.get_random_response("not_found", f"ID {args['task_id']}")) 
                     ai_info = f"Error: Task ID {args['task_id']} not found"
-                     
+
             elif fn == "get_tasks_tool":
                 res = await db.get_tasks_by_date(chat_id, args["target_date"], args.get("status_filter", "all"), for_ai=False)
                 results.append(res)
@@ -215,14 +215,15 @@ async def process_logic(chat_id: int, text: str):
                     results.append("Не найдено")
                     ai_info = f"Error: Task not found"
             elif fn == "set_timezone_tool":
-                offset = args["offset"]
-                await db.set_user_tz(chat_id, offset) # Сохраняем в БД (мы написали эту функцию в прошлом шаге)
+                # Переводим строку от ИИ в нормальное число
+                offset = int(args["offset"]) 
+                
+                await db.set_user_tz(chat_id, offset)
                 
                 sign = "+" if offset > 0 else ""
-                # Ответ, который бот вернет пользователю
                 results.append(f"🌍 Отлично! Я установил твой часовой пояс (UTC{sign}{offset}). Теперь все напоминания будут приходить точно вовремя. Какие планы запишем?")
                 ai_info = f"Success. Timezone updated to UTC{sign}{offset}"
-
+                
             # --- ИСПРАВЛЕНИЕ: СОХРАНЯЕМ РЕЗУЛЬТАТ ТУЛА В ИСТОРИЮ ИИ ---
             user_history[chat_id].append({
                 "role": "tool",
