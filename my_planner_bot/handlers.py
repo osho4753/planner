@@ -15,7 +15,6 @@ def get_main_menu():
     buttons = [
         [KeyboardButton(text="📅 Планы на сегодня"), KeyboardButton(text="🌅 На завтра")],
         [KeyboardButton(text="✅ Что сделано?"), KeyboardButton(text="❓ Что осталось?")],
-        [KeyboardButton(text="⏰ Часовой пояс (/tz)")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
