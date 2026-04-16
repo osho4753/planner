@@ -7,6 +7,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
 
+GOOGLE_TEMPLATE_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+GOOGLE_CREDS_PATH = os.getenv("GOOGLE_SHEETS_CREDENTIALS_PATH")
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 

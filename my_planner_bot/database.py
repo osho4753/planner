@@ -12,7 +12,7 @@ def get_random_response(action: str, task: str, time: str = "", remind_time: str
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         # Добавили tz_offset DEFAULT 3 (по умолчанию Москва UTC+3)
-        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, tz_offset INTEGER DEFAULT 3)")
+        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, tz_offset INTEGER DEFAULT 3,spreadsheet_id TEXT))")
         
         try: 
             await db.execute("ALTER TABLE users ADD COLUMN tz_offset INTEGER DEFAULT 3")
@@ -33,8 +33,30 @@ async def init_db():
         try: await db.execute("ALTER TABLE tasks ADD COLUMN remind_time TEXT")
         except: pass
         await db.commit()
+# --- НОВЫЕ ФУНКЦИИ ДЛЯ GOOGLE ТАБЛИЦ ---
 
-# --- НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ЧАСОВЫМ ПОЯСОМ ---
+async def set_user_spreadsheet(chat_id: int, spreadsheet_id: str):
+    """Сохраняет ID сгенерированной таблицы для пользователя"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            # Пытаемся добавить колонку, если ее еще нет
+            await db.execute("ALTER TABLE users ADD COLUMN spreadsheet_id TEXT")
+        except:
+            pass # Колонка уже существует
+            
+        await db.execute("UPDATE users SET spreadsheet_id = ? WHERE chat_id = ?", (spreadsheet_id, chat_id))
+        await db.commit()
+
+async def get_user_spreadsheet(chat_id: int):
+    """Достает ID таблицы пользователя"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            cursor = await db.execute("SELECT spreadsheet_id FROM users WHERE chat_id = ?", (chat_id,))
+            row = await cursor.fetchone()
+            return row[0] if row else None
+        except:
+            return None # Если колонки еще нет
+        
 async def get_user_tz(chat_id: int) -> int:
     """Получает часовой пояс пользователя (смещение в часах)"""
     async with aiosqlite.connect(DB_NAME) as db:

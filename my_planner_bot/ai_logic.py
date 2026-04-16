@@ -3,6 +3,7 @@ from datetime import datetime
 from config import client, scheduler
 import database as db
 from scheduler_jobs import send_reminder
+from google_sheets import sheets_manager
 
 # --- КРАТКОСРОЧНАЯ ПАМЯТЬ ---
 user_history = {}
@@ -99,7 +100,17 @@ async def process_add_task(chat_id, args):
     remind_short = remind_time.split()[1][:5] if " " in remind_time else ""
     
     human_text = db.get_random_response("add_task", task_text, time_short, remind_short)
+    
     ai_info = f"Success. Task added with ID: {task_id}" # ВОТ ЭТО ИИ ЗАПОМНИТ
+    # --- GOOGLE SHEETS INTEGRATION ---
+    ss_id = await db.get_user_spreadsheet(chat_id)
+    if ss_id:
+        # Форматируем дату и время красиво
+        t_date = task_time.split()[0] if len(task_time) >= 10 else "Сегодня"
+        t_time = task_time.split()[1][:5] if " " in task_time else "Весь день"
+        # Кидаем в очередь
+        sheets_manager.add_task(ss_id, t_date, t_time, task_text, task_id)
+    # ---------------------------------
     
     return human_text, ai_info
 
@@ -156,6 +167,9 @@ async def process_logic(chat_id: int, text: str):
                 if row:
                     try: scheduler.remove_job(row[1])
                     except: pass
+                    ss_id = await db.get_user_spreadsheet(chat_id)
+                    if ss_id:
+                        sheets_manager.delete_task(ss_id, args["task_id"])
                     results.append(db.get_random_response("delete_task", row[2]))
                     ai_info = f"Success. Deleted task ID: {args['task_id']}"
                 else:
@@ -170,6 +184,11 @@ async def process_logic(chat_id: int, text: str):
                     new_task_time=args.get("new_task_time"),
                     new_remind_time=args.get("new_remind_time")
                 )
+                ss_id = await db.get_user_spreadsheet(chat_id)
+                if ss_id:
+                    # Обновляем текст и время в таблице
+                    new_t = res["task_time"].split()[1][:5] if res["task_time"] else None
+                    sheets_manager.update_task(ss_id, args["task_id"], new_text=res["text"], new_time=new_t)
                 if res:
                     # Удаляем старый таймер, если он еще висит
                     try: scheduler.remove_job(res["job_id"])
@@ -211,9 +230,16 @@ async def process_logic(chat_id: int, text: str):
                 if task_text:
                     results.append(db.get_random_response("complete_task", task_text))
                     ai_info = f"Success. Completed task ID: {args['task_id']}"
+                    
+                    # --- GOOGLE SHEETS INTEGRATION ---
+                    ss_id = await db.get_user_spreadsheet(chat_id)
+                    if ss_id:
+                        sheets_manager.complete_task(ss_id, task_text)
+                    # ---------------------------------
                 else:
                     results.append("Не найдено")
                     ai_info = f"Error: Task not found"
+
             elif fn == "set_timezone_tool":
                 # Переводим строку от ИИ в нормальное число
                 offset = int(args["offset"]) 

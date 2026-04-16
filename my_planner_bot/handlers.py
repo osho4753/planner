@@ -2,7 +2,8 @@ import os
 import tempfile
 import random
 from datetime import datetime, timedelta
-
+import asyncio
+from google_sheets import sheets_manager
 from aiogram import F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -15,6 +16,7 @@ def get_main_menu():
     buttons = [
         [KeyboardButton(text="📅 Планы на сегодня"), KeyboardButton(text="🌅 На завтра")],
         [KeyboardButton(text="✅ Что сделано?"), KeyboardButton(text="❓ Что осталось?")],
+        [KeyboardButton(text="📊 Мой Дашборд (Google Sheets)")]
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
@@ -84,7 +86,31 @@ async def toggle_checkbox(call: CallbackQuery):
     await call.message.edit_reply_markup(reply_markup=builder.as_markup())
     await call.answer()
 # ------------------------------------------
+@dp.message(F.text == "📊 Мой Дашборд (Google Sheets)")
+async def cmd_dashboard(m: Message):
+    # Проверяем, может таблица уже есть?
+    ss_id = await db.get_user_spreadsheet(m.chat.id)
+    if ss_id:
+        url = f"https://docs.google.com/spreadsheets/d/{ss_id}"
+        await m.answer(f"Твой дашборд уже работает! 🚀\nПереходи по ссылке: {url}")
+        return
 
+    status_msg = await m.answer("⏳ Создаю твой персональный дашборд... Это может занять пару секунд.")
+    
+    # Запускаем копирование в фоновом потоке, чтобы Telegram не повис
+    loop = asyncio.get_event_loop()
+    new_id, new_url = await loop.run_in_executor(
+        None, 
+        sheets_manager.create_dashboard_sync, 
+        m.from_user.first_name
+    )
+
+    if new_id:
+        await db.set_user_spreadsheet(m.chat.id, new_id)
+        await status_msg.edit_text(f"🎉 Готово! Твой крутой дашборд создан:\n{new_url}\n\nТеперь все твои новые дела будут улетать прямо туда!")
+    else:
+        await status_msg.edit_text("⚠️ Ой, небольшая заминка с Google. Попробуй позже.")
+        
 @dp.message(F.text)
 async def handle_text(m: Message):
     txt = m.text
