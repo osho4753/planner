@@ -12,7 +12,7 @@ def get_random_response(action: str, task: str, time: str = "", remind_time: str
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
         # Добавили tz_offset DEFAULT 3 (по умолчанию Москва UTC+3)
-        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, tz_offset INTEGER DEFAULT 3,spreadsheet_id TEXT))")
+        await db.execute("CREATE TABLE IF NOT EXISTS users (chat_id INTEGER PRIMARY KEY, tz_offset INTEGER DEFAULT 3, spreadsheet_id TEXT)")
         
         try: 
             await db.execute("ALTER TABLE users ADD COLUMN tz_offset INTEGER DEFAULT 3")
